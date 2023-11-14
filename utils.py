@@ -25,3 +25,29 @@ def original_initialization(model, state_dict):
             # print("b", name)
             p.data = model.state_dict()[name]
 
+def antnet_initialization(model, models):
+    w = 0
+    mn = 0
+    b = 0
+    n = 0
+    for name, p in model.named_parameters():
+        if "weight" in name or "weight_prune" in name:
+            m = name.split(".")[0]
+            print(m)
+            m = int(m.split("c")[1])
+            print(type(m))
+            p.data = models[n].state_dict()[f"fc{str(m-n*3)}.weight"]
+        if "mask" in name:
+            m = name.split(".")[0]
+            m = int(m.split("c")[1])
+            p.data = models[n].state_dict()[f"fc{str(m-n*3)}.mask"]
+        if "bias" in name:
+            m = name.split(".")[0]
+            m = int(m.split("c")[1])
+            p.data = models[n].state_dict()[f"fc{str(m-n*3)}.bias"]
+            b = b + 1
+            if b % 3 == 0:
+                n = n + 1
+        
+        
+        

@@ -1,5 +1,6 @@
 
 import argparse
+import statistics
 
 import copy
 import os
@@ -14,8 +15,9 @@ import torchvision
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 
-from  models import lanet
+from  models import lanet, antnet
 import utils
+
 
 #endless loader
 def cycle(iterable):
@@ -25,7 +27,6 @@ def cycle(iterable):
 
 #logger
 from datetime import datetime
-
 
 def logging(fname, text):
     f = open(fname,"a")
@@ -55,19 +56,32 @@ def main(args, ITE=0):
         ])),
         batch_size=args.batch_size, shuffle=False, num_workers=0,drop_last=True)
 
-    model = lanet.LeNet(mask=True).to(device)
-    initial_state_dict = copy.deepcopy(model.state_dict())
-    torch.save({"state_dict": initial_state_dict}, f"saves/initial_state_dict_{args.prune_type}.pth.tar")
+    
+
+    n = 5           ###読み込むモデルの刈り込み段階　ハイパラで指定###
+    model_num = 3
+    models = []
+    for i in range(model_num):
+        # load trained model
+        model = lanet.LeNet(mask=True).to(device)
+        for name, p in model.named_parameters():
+            if "mask" in name:
+                num = torch.count_nonzero(p)
+                print(f"{name}'s nonzero param number: {num}")
+        checkpoint = torch.load(f"saves/{i}_model/{n}_model_normal.pth.tar")
+        model.load_state_dict(checkpoint["state_dict"])
+
+        # load model's initial value
+        initial_state_dict = torch.load(f"saves/{i}_model/initial_state_dict_normal.pth.tar")["state_dict"]
+        utils.original_initialization(model, initial_state_dict)
+        models.append(model)
+
+
+    model = antnet.AntNet(model_num, mask=True).to(device)  
+    utils.antnet_initialization(model, models)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-4)
 
     start_iteration = 0
-    if args.resume:
-        checkpoint = torch.load(f"saves/model_{args.prune_type}.pth.tar")
-        start_iteration = checkpoint["iter"]
-        model.load_state_dict(checkpoint["state_dict"])
-        initial_state_dict = torch.load(f"saves/initial_state_dict_{args.prune_type}.pth.tar")["state_dict"]
-        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-4)
-
     ITERATION = 25
     for _ite in range(start_iteration, ITERATION):
         # Pruning
@@ -83,13 +97,13 @@ def main(args, ITE=0):
         for iter_ in pbar:
             if iter_ % args.valid_freq == 0:
                 accuracy = test(model, test_loader)
-                logging(f"log/{ITE}_reinit/train_{_ite}_{args.prune_type}.log", "[%06d]\tAccuracy = %04f " % (iter_, float(accuracy)))
+                logging(f"log/ant_model/{ITE}_reinit/train_{_ite}_{args.prune_type}.log", "[%06d]\tAccuracy = %04f " % (iter_, float(accuracy)))
             loss = train(model, train_loader, optimizer)
             if iter_ % args.print_freq == 0:
                 pbar.set_description(
                     f'Train Epoch: {iter_}/{args.end_iter} Loss: {loss:.6f} Accuracy: {accuracy:.2f}%')
 
-        torch.save({"state_dict": model.state_dict(), "iter": _ite}, f"saves/model_{args.prune_type}.pth.tar")
+        torch.save({"state_dict": model.state_dict(), "iter": _ite}, f"saves/ant_model/model_{args.prune_type}.pth.tar")
 
 
 def train(model, train_loader, optimizer):
@@ -99,7 +113,7 @@ def train(model, train_loader, optimizer):
     model.train()
     imgs, targets = next(train_loader)
     imgs, targets = imgs.to(device), targets.to(device)
-    output = model(imgs)
+    output = F.log_softmax(model(imgs), dim=1)
     train_loss = F.nll_loss(output, targets)
     train_loss.backward()
 
@@ -123,7 +137,7 @@ def test(model, test_loader):
     with torch.no_grad():
         for data, target in test_loader:
             data, target = data.to(device), target.to(device)
-            output = model(data)
+            output = F.log_softmax(model(data), dim=1)
             test_loss += F.nll_loss(output, target, reduction='sum').item()  # sum up batch loss
             pred = output.data.max(1, keepdim=True)[1]  # get the index of the max log-probability
             correct += pred.eq(target.data.view_as(pred)).sum().item()
@@ -138,7 +152,7 @@ if __name__=="__main__":
     parser.add_argument("--lr",default= 1.2e-3, type=float)
     parser.add_argument("--batch_size", default=60, type=int)
     parser.add_argument("--start_iter", default=0, type=int)
-    parser.add_argument("--end_iter", default=2000, type=int)
+    parser.add_argument("--end_iter", default=4000, type=int)
     parser.add_argument("--print_freq", default=10, type=int)
     parser.add_argument("--valid_freq", default=100, type=int)
     parser.add_argument("--resume", action="store_true")
@@ -147,13 +161,4 @@ if __name__=="__main__":
 
     args = parser.parse_args()
 
-    for i in range(0, 5):
-        main(args, ITE=i)
-
-    # tensor = np.random.randn(10)
-    # tensor[0] = 0
-    # grad_tensor = np.random.randn(10)
-    # print("tesnsor\n", tensor)
-    # print("grad_tensor\n", grad_tensor)
-    # print("where\n",np.where(tensor==0,0,grad_tensor))
-
+    main(args, ITE=0)
